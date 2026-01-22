@@ -1,36 +1,43 @@
-name: Docker Build and Push
+name: Build and Push Multi-arch Node.js Image
 
+# 仅手动触发，并允许自定义镜像标签
 on:
   workflow_dispatch:
     inputs:
       image-tag:
-        description: '镜像标签'
+        description: '镜像标签 (例如: latest, v1.0)'
         required: true
         default: 'latest'
         type: string
-      build-platforms:
-        description: '构建平台'
+      node-version:
+        description: 'Node.js 版本'
         required: false
-        default: 'linux/amd64'
+        default: '18'
         type: string
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/node-app
+  PLATFORMS: linux/amd64,linux/arm64
 
 jobs:
-  build:
+  build-and-push:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
 
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Docker Buildx
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          platforms: ${{ env.PLATFORMS }}
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -39,12 +46,32 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Docker image
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ github.event.inputs.image-tag }}
+            type=ref,event=tag
+            type=sha
+
+      - name: Build and push multi-arch image
         uses: docker/build-push-action@v5
         with:
           context: .
+          platforms: ${{ env.PLATFORMS }}
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.image-tag }}
-          platforms: ${{ inputs.build-platforms }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            NODE_VERSION=${{ github.event.inputs.node-version }}
+
+      - name: Show image details
+        run: |
+          echo "✅ 多架构镜像构建完成！"
+          echo "📦 镜像: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.event.inputs.image-tag }}"
+          echo "🏗️  支持的平台: ${{ env.PLATFORMS }}"
+          echo "🟢 Node.js 版本: ${{ github.event.inputs.node-version }}"
