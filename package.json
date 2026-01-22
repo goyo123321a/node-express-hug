@@ -1,13 +1,15 @@
 {
-  "name": "node-app",
-  "version": "2.0.0",
-  "description": "Network application with proxy functionality",
+  "name": "network-tool",
+  "version": "1.0.0",
+  "description": "Network application",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js"
   },
   "dependencies": {
+    "express": "^4.18.2",
+    "axios": "^1.6.2",
     "http-proxy": "^1.18.1"
   },
   "devDependencies": {
@@ -18,10 +20,7 @@
   },
   "keywords": [
     "network",
-    "application",
-    "service",
-    "tool",
-    "utility"
+    "application"
   ],
   "author": "",
   "license": "MIT"
