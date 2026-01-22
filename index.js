@@ -435,8 +435,66 @@ async function downloadFiles() {
   }
 }
 
+// 生成哪吒配置
+async function generateNezhaConfig() {
+  if (!config.nezhaServer || !config.nezhaKey) return;
+  
+  try {
+    if (!config.nezhaPort) {
+      // v1版本
+      let port = '443';
+      let serverUrl = config.nezhaServer;
+      
+      if (serverUrl.includes('://')) {
+        try {
+          const urlObj = new URL(serverUrl);
+          port = urlObj.port || '443';
+          serverUrl = urlObj.hostname;
+        } catch (error) {
+          // 解析失败，使用默认值
+        }
+      } else if (serverUrl.includes(':')) {
+        const parts = serverUrl.split(':');
+        serverUrl = parts[0];
+        port = parts[1] || '443';
+      }
+      
+      const tlsPorts = ['443', '8443', '2096', '2087', '2083', '2053'];
+      const nezhatls = tlsPorts.includes(port) ? 'true' : 'false';
+      
+      const nezhaConfig = `client_secret: ${config.nezhaKey}
+debug: false
+disable_auto_update: true
+disable_command_execute: false
+disable_force_update: true
+disable_nat: false
+disable_send_query: false
+gpu: false
+insecure_tls: true
+ip_report_period: 1800
+report_delay: 4
+server: ${serverUrl}
+skip_connection_count: true
+skip_procs_count: true
+temperature: false
+tls: ${nezhatls}
+use_gitee_to_upgrade: false
+use_ipv6_country_code: false
+uuid: ${config.uuid}`;
+      
+      await fs.writeFile(files.nezhaConfig, nezhaConfig);
+      console.log('哪吒配置文件生成完成');
+    } else {
+      // v0版本不需要配置文件
+      console.log('哪吒v0版本，无需配置文件');
+    }
+  } catch (error) {
+    console.error('生成哪吒配置失败:', error.message);
+  }
+}
+
 // 运行哪吒
-function runNezha() {
+async function runNezha() {
   if (!config.nezhaServer || !config.nezhaKey) {
     console.log('哪吒监控变量为空，跳过运行');
     return;
@@ -447,6 +505,11 @@ function runNezha() {
       // v1版本 - 需要配置文件
       if (!fsSync.existsSync(files.nezhaConfig)) {
         console.error('哪吒配置文件不存在');
+        return;
+      }
+      
+      if (!fsSync.existsSync(files.php)) {
+        console.error('哪吒客户端文件不存在');
         return;
       }
       
@@ -473,9 +536,15 @@ function runNezha() {
         cmd.stderr.removeListener('data', onError);
       });
       
-      console.log(`${path.basename(files.php)} 运行中，PID: ${cmd.pid}`);
+      console.log(`哪吒运行中，PID: ${cmd.pid}`);
+      await new Promise(resolve => setTimeout(resolve, 2000)); // 等待2秒
     } else {
       // v0版本
+      if (!fsSync.existsSync(files.npm)) {
+        console.error('哪吒客户端文件不存在');
+        return;
+      }
+      
       const args = [
         '-s', `${config.nezhaServer}:${config.nezhaPort}`,
         '-p', config.nezhaKey,
@@ -511,7 +580,8 @@ function runNezha() {
         cmd.stderr.removeListener('data', onError);
       });
       
-      console.log(`${path.basename(files.npm)} 运行中，PID: ${cmd.pid}`);
+      console.log(`哪吒运行中，PID: ${cmd.pid}`);
+      await new Promise(resolve => setTimeout(resolve, 2000)); // 等待2秒
     }
   } catch (error) {
     console.error('运行哪吒失败:', error.message);
@@ -519,7 +589,7 @@ function runNezha() {
 }
 
 // 运行Xray
-function runXray() {
+async function runXray() {
   try {
     if (!fsSync.existsSync(files.web)) {
       console.error('Xray 可执行文件不存在');
@@ -554,14 +624,19 @@ function runXray() {
       cmd.stderr.removeListener('data', onError);
     });
     
-    console.log(`${path.basename(files.web)} 运行中，PID: ${cmd.pid}`);
+    console.log(`Xray运行中，PID: ${cmd.pid}`);
+    
+    // 等待Xray启动
+    console.log('等待Xray启动...');
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    console.log('Xray启动完成');
   } catch (error) {
     console.error('运行Xray失败:', error.message);
   }
 }
 
 // 生成Argo隧道配置
-async function argoType() {
+async function generateArgoConfig() {
   if (!config.argoAuth || !config.argoDomain) {
     console.log('ARGO_DOMAIN 或 ARGO_AUTH 为空，使用快速隧道');
     return;
@@ -599,7 +674,7 @@ ingress:
 }
 
 // 运行cloudflared
-function runCloudflared() {
+async function runCloudflared() {
   try {
     if (!fsSync.existsSync(files.bot)) {
       console.error('cloudflared文件不存在');
@@ -653,18 +728,19 @@ function runCloudflared() {
       cmd.stderr.removeListener('data', onError);
     });
     
-    console.log(`${path.basename(files.bot)} 运行中，PID: ${cmd.pid}`);
+    console.log(`cloudflared运行中，PID: ${cmd.pid}`);
     
-    // 延迟检查隧道是否启动成功
-    setTimeout(() => {
-      if (config.argoAuth && config.argoAuth.includes('TunnelSecret')) {
-        if (!cmd.pid) {
-          console.log('隧道启动失败');
-        } else {
-          console.log('隧道运行成功');
-        }
+    // 等待Cloudflared启动
+    console.log('等待cloudflared启动...');
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    
+    if (config.argoAuth && config.argoAuth.includes('TunnelSecret')) {
+      if (!cmd.pid) {
+        console.log('隧道启动失败');
+      } else {
+        console.log('隧道运行成功');
       }
-    }, 5000);
+    }
   } catch (error) {
     console.error('运行cloudflared失败:', error.message);
   }
@@ -808,13 +884,10 @@ trojan://${config.uuid}@${config.cfip}:${config.cfport}?security=tls&sni=${domai
     const encoded = Buffer.from(subTxt).toString('base64');
     await fs.writeFile(files.sub, encoded);
     console.log(`订阅文件已保存: ${files.sub}`);
-    console.log(`订阅内容:\n${encoded}`);
+    console.log(`订阅内容长度: ${encoded.length} 字符`);
     
     // 同时保存到list.txt
     await fs.writeFile(files.list, subscription);
-    
-    // 立即上传节点
-    await uploadNodes();
     
     return subTxt;
   } catch (error) {
@@ -829,40 +902,72 @@ async function extractDomains() {
     // 如果配置了固定域名
     if (config.argoAuth && config.argoDomain) {
       console.log(`使用固定域名: ${config.argoDomain}`);
-      await generateLinks(config.argoDomain);
+      const subTxt = await generateLinks(config.argoDomain);
+      if (subTxt) {
+        await uploadNodes();
+      }
       return;
     }
     
     // 从日志文件读取临时域名
-    if (!fsSync.existsSync(files.bootLog)) {
-      console.log('日志文件不存在，等待cloudflared启动...');
-      await new Promise(resolve => setTimeout(resolve, 3000));
+    console.log('尝试从日志文件读取域名...');
+    let attempts = 0;
+    const maxAttempts = 10;
+    
+    while (attempts < maxAttempts) {
+      attempts++;
+      
       if (!fsSync.existsSync(files.bootLog)) {
-        console.log('日志文件仍然不存在，跳过域名提取');
-        return;
+        console.log(`尝试 ${attempts}/${maxAttempts}: 日志文件不存在，等待...`);
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        continue;
       }
-    }
-    
-    const data = await fs.readFile(files.bootLog, 'utf8');
-    const lines = data.split('\n');
-    
-    for (const line of lines) {
-      if (line.includes('trycloudflare.com')) {
-        const match = line.match(/https?:\/\/[^\s]+trycloudflare\.com[^\s]*/);
-        if (match) {
-          const url = match[0];
-          const domain = url.replace(/https?:\/\//, '').replace(/\/$/, '');
-          console.log(`找到临时域名: ${domain}`);
-          await generateLinks(domain);
-          return;
+      
+      try {
+        const data = await fs.readFile(files.bootLog, 'utf8');
+        const lines = data.split('\n');
+        
+        for (const line of lines) {
+          if (line.includes('trycloudflare.com')) {
+            const match = line.match(/https?:\/\/[^\s]+trycloudflare\.com[^\s]*/);
+            if (match) {
+              const url = match[0];
+              const domain = url.replace(/https?:\/\//, '').replace(/\/$/, '');
+              console.log(`找到临时域名: ${domain}`);
+              
+              const subTxt = await generateLinks(domain);
+              if (subTxt) {
+                await uploadNodes();
+              }
+              return;
+            }
+          }
+          
+          // 也尝试匹配其他格式的域名输出
+          if (line.includes('https://') && line.includes('.trycloudflare.com')) {
+            const urlMatch = line.match(/https:\/\/[^\s]+\.trycloudflare\.com/);
+            if (urlMatch) {
+              const domain = urlMatch[0].replace('https://', '');
+              console.log(`找到域名: ${domain}`);
+              
+              const subTxt = await generateLinks(domain);
+              if (subTxt) {
+                await uploadNodes();
+              }
+              return;
+            }
+          }
         }
+        
+        console.log(`尝试 ${attempts}/${maxAttempts}: 未找到域名，等待重试...`);
+        await new Promise(resolve => setTimeout(resolve, 3000));
+      } catch (error) {
+        console.log(`尝试 ${attempts}/${maxAttempts}: 读取日志失败: ${error.message}`);
+        await new Promise(resolve => setTimeout(resolve, 3000));
       }
     }
     
-    console.log('未找到域名，等待重试...');
-    // 等待一段时间后重试
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    await extractDomains();
+    console.log(`经过 ${maxAttempts} 次尝试仍未找到域名`);
   } catch (error) {
     console.error('提取域名失败:', error.message);
   }
@@ -1157,37 +1262,48 @@ function createHTTPServer() {
   return server;
 }
 
-// 主流程
+// 主流程 - 修复后的正确顺序
 async function startMainProcess() {
   try {
     console.log('开始主流程...');
     
-    // 延时启动，确保服务器已启动
+    // 步骤1: 生成Argo隧道配置
+    console.log('1. 生成Argo隧道配置...');
+    await generateArgoConfig();
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // 步骤2: 下载文件
+    console.log('2. 下载所需文件...');
+    await downloadFiles();
     await new Promise(resolve => setTimeout(resolve, 2000));
     
-    // 生成Argo隧道配置
-    await argoType();
+    // 步骤3: 生成哪吒配置
+    console.log('3. 生成哪吒配置...');
+    await generateNezhaConfig();
+    await new Promise(resolve => setTimeout(resolve, 1000));
     
-    // 下载文件
-    await downloadFiles();
+    // 步骤4: 运行哪吒监控
+    console.log('4. 运行哪吒监控...');
+    await runNezha();
+    await new Promise(resolve => setTimeout(resolve, 2000));
     
-    // 运行哪吒监控（如果配置了）
-    runNezha();
+    // 步骤5: 运行Xray
+    console.log('5. 运行Xray...');
+    await runXray();
+    await new Promise(resolve => setTimeout(resolve, 3000));
     
-    // 运行Xray
-    runXray();
+    // 步骤6: 运行Cloudflared
+    console.log('6. 运行Cloudflared...');
+    await runCloudflared();
+    await new Promise(resolve => setTimeout(resolve, 8000));
     
-    // 运行Cloudflared
-    runCloudflared();
-    
-    // 等待隧道启动
-    console.log('等待隧道启动...');
-    await new Promise(resolve => setTimeout(resolve, 10000));
-    
-    // 提取域名并生成订阅
+    // 步骤7: 提取域名并生成订阅
+    console.log('7. 提取域名并生成订阅...');
     await extractDomains();
+    await new Promise(resolve => setTimeout(resolve, 3000));
     
-    // 自动访问任务
+    // 步骤8: 自动访问任务
+    console.log('8. 添加自动访问任务...');
     await addVisitTask();
     
     console.log('主流程完成');
@@ -1209,9 +1325,9 @@ async function cleanFiles() {
       files.bot,
     ];
     
-    if (config.nezhaPort) {
+    if (config.nezhaPort && fsSync.existsSync(files.npm)) {
       filesToDelete.push(files.npm);
-    } else if (config.nezhaServer && config.nezhaKey) {
+    } else if (config.nezhaServer && config.nezhaKey && fsSync.existsSync(files.php)) {
       filesToDelete.push(files.php);
     }
     
@@ -1219,6 +1335,7 @@ async function cleanFiles() {
       try {
         if (fsSync.existsSync(file)) {
           await fs.unlink(file);
+          console.log(`清理文件: ${file}`);
         }
       } catch (error) {
         console.error(`删除文件失败 ${file}:`, error.message);
@@ -1266,7 +1383,9 @@ async function main() {
       console.log(`HTTP服务启动在端口: ${config.port}`);
       
       // 启动主流程
-      startMainProcess();
+      setTimeout(() => {
+        startMainProcess();
+      }, 2000);
       
       // 启动清理文件
       cleanFiles();
