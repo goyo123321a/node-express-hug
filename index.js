@@ -1,9 +1,8 @@
 const express = require('express');
 const fs = require('fs').promises;
 const fsSync = require('fs');
-const path = require('path');  // path 模块在这里引入
+const path = require('path');
 const http = require('http');
-const https = require('https');
 const { spawn, exec } = require('child_process');
 const crypto = require('crypto');
 const axios = require('axios');
@@ -243,62 +242,76 @@ async function generateXrayConfig() {
   console.log("Xray配置文件生成完成");
 }
 
+// 创建HTTP代理服务器（使用你提供的路由方式）
+function createProxyServer() {
+  const proxy = httpProxy.createProxyServer();
+  const proxyServer = http.createServer((req, res) => {
+    const reqPath = req.url;
+    
+    if (reqPath.startsWith('/vless-argo') || 
+        reqPath.startsWith('/vmess-argo') || 
+        reqPath.startsWith('/trojan-argo') ||
+        reqPath === '/vless' || 
+        reqPath === '/vmess' || 
+        reqPath === '/trojan') {
+      proxy.web(req, res, { target: 'http://localhost:3001' });
+    } else {
+      proxy.web(req, res, { target: `http://localhost:${config.port}` });
+    }
+  });
+
+  // WebSocket代理处理
+  proxyServer.on('upgrade', (req, socket, head) => {
+    const reqPath = req.url;
+    
+    if (reqPath.startsWith('/vless-argo') || 
+        reqPath.startsWith('/vmess-argo') || 
+        reqPath.startsWith('/trojan-argo')) {
+      proxy.ws(req, socket, head, { target: 'http://localhost:3001' });
+    } else {
+      proxy.ws(req, socket, head, { target: `http://localhost:${config.port}` });
+    }
+  });
+
+  return proxyServer;
+}
+
+// 设置Express路由
+function setupRoutes() {
+  // 根路由 - 提供外部index.html文件或显示Hello world!
+  app.get("/", function(req, res) {
+    const indexPath = path.join(__dirname, 'index.html');
+    
+    // 检查index.html文件是否存在
+    if (fsSync.existsSync(indexPath)) {
+      res.sendFile(indexPath);
+    } else {
+      res.send("Hello world!");
+    }
+  });
+
+  // 订阅路由（动态添加，在生成订阅后添加）
+}
+
 // 启动HTTP服务器
 function startHTTPServer() {
-  const proxy = httpProxy.createProxyServer({});
+  // 设置路由
+  setupRoutes();
   
-  app.use((req, res, next) => {
-    const reqPath = req.path;  // 这里改名为 reqPath，避免与 path 模块冲突
-    
-    // 订阅路径
-    if (reqPath === `/${config.subPath}` || reqPath === `/${config.subPath}/`) {
-      const encoded = Buffer.from(subscription).toString('base64');
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      return res.send(encoded);
-    }
-    
-    // 根路径
-    if (reqPath === '/') {
-      // 检查index.html文件
-      const indexPaths = ['index.html', '/app/index.html'];
-      for (const indexPath of indexPaths) {
-        if (fsSync.existsSync(indexPath)) {
-          return res.sendFile(path.resolve(indexPath));
-        }
-      }
-      return res.send('Hello world!');
-    }
-    
-    // 代理其他请求
-    const target = reqPath.startsWith('/vless-argo') || 
-                   reqPath.startsWith('/vmess-argo') || 
-                   reqPath.startsWith('/trojan-argo') ||
-                   reqPath === '/vless' || 
-                   reqPath === '/vmess' || 
-                   reqPath === '/trojan'
-                   ? 'http://localhost:3001'
-                   : `http://localhost:${config.port}`;
-    
-    proxy.web(req, res, { target });
-  });
-
-  // 处理代理错误
-  proxy.on('error', (err, req, res) => {
-    console.error('代理错误:', err);
-    if (!res.headersSent) {
-      res.status(500).send('代理错误');
-    }
-  });
-
-  // 启动外部端口代理
-  app.listen(config.externalPort, () => {
-    console.log(`外部代理服务启动在端口: ${config.externalPort}`);
+  // 创建代理服务器
+  const proxyServer = createProxyServer();
+  
+  // 启动代理服务器（外部端口）
+  proxyServer.listen(config.externalPort, () => {
+    console.log(`外部代理服务启动在端口: ${config.externalPort}!`);
+    console.log(`HTTP traffic -> localhost:${config.port}`);
+    console.log(`Xray traffic -> localhost:3001`);
   });
 
   // 启动内部HTTP服务
   const internalServer = http.createServer(app);
   internalServer.listen(config.port, () => {
-    console.log(`内部HTTP服务启动在端口: ${config.port}`);
+    console.log(`内部HTTP服务启动在端口: ${config.port}!`);
   });
 }
 
@@ -736,6 +749,13 @@ trojan://${config.uuid}@${config.cfip}:${config.cfport}?security=tls&sni=${domai
   await fs.writeFile(files.sub, encoded);
   console.log(`订阅文件已保存: ${files.sub}`);
   console.log(`订阅内容:\n${encoded}`);
+
+  // 动态添加订阅路由
+  app.get(`/${config.subPath}`, (req, res) => {
+    const encodedContent = Buffer.from(subscription).toString('base64');
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.send(encodedContent);
+  });
 }
 
 // 上传节点
@@ -801,9 +821,29 @@ async function addVisitTask() {
   }
 }
 
+// 清理历史文件
+function cleanupOldFiles() {
+  try {
+    const fileList = fsSync.readdirSync(config.filePath);
+    fileList.forEach(file => {
+      const filePath = path.join(config.filePath, file);
+      try {
+        const stat = fsSync.statSync(filePath);
+        if (stat.isFile()) {
+          fsSync.unlinkSync(filePath);
+        }
+      } catch (err) {
+        // 忽略错误
+      }
+    });
+  } catch (err) {
+    // 忽略错误
+  }
+}
+
 // 清理文件
-async function cleanFiles() {
-  setTimeout(async () => {
+function cleanFiles() {
+  setTimeout(() => {
     const filesToDelete = [
       files.bootLog,
       files.config,
@@ -818,34 +858,47 @@ async function cleanFiles() {
       filesToDelete.push(files.php);
     }
 
-    for (const file of filesToDelete) {
-      try {
-        await fs.unlink(file);
-      } catch (err) {
-        // 忽略错误
-      }
+    if (process.platform === 'win32') {
+      exec(`del /f /q ${filesToDelete.join(' ')} > nul 2>&1`, (error) => {
+        console.clear();
+        console.log('应用正在运行');
+        console.log('感谢使用此脚本，享受吧！');
+      });
+    } else {
+      exec(`rm -rf ${filesToDelete.join(' ')} >/dev/null 2>&1`, (error) => {
+        console.clear();
+        console.log('应用正在运行');
+        console.log('感谢使用此脚本，享受吧！');
+      });
     }
-
-    console.log("应用正在运行");
-    console.log("感谢使用此脚本，享受吧！");
   }, 90000);
 }
 
 // 主流程
 async function startMainProcess() {
-  await new Promise(resolve => setTimeout(resolve, 2000));
-
-  await argoType();
-  await downloadFiles();
-  runNezha();
-  runXray();
-  runCloudflared();
-
-  await new Promise(resolve => setTimeout(resolve, 5000));
-  await extractDomains();
-  await uploadNodes();
-  await addVisitTask();
-  await cleanFiles();
+  try {
+    console.log('开始服务器初始化...');
+    
+    deleteNodes();
+    cleanupOldFiles();
+    
+    await argoType();
+    await generateXrayConfig();
+    await downloadFiles();
+    
+    runNezha();
+    runXray();
+    runCloudflared();
+    
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    await extractDomains();
+    await uploadNodes();
+    await addVisitTask();
+    
+    console.log('服务器初始化完成');
+  } catch (error) {
+    console.error('启动过程中出错:', error);
+  }
 }
 
 // 初始化
@@ -860,11 +913,10 @@ async function init() {
   }
 
   initFilePaths();
-  await cleanup();
-  await generateXrayConfig();
   startHTTPServer();
   startMonitorScript();
   startMainProcess();
+  cleanFiles();
 }
 
 // 启动程序
